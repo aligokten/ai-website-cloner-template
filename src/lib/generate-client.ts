@@ -1,22 +1,24 @@
-import type { ArtStyle, GenerationTask, ModelSpec, TaskMode, Topology } from "@/types";
+import {
+  DURATION,
+  newTaskId,
+  resolveSpec,
+  STAGES,
+  validateInput,
+  type GenerationInput,
+  type JobStage,
+} from "@/lib/generation";
+import { CREDIT_COST } from "@/lib/pricing";
+import type { GenerationTask, ModelSpec, TaskMode } from "@/types";
 
-export interface GenerateRequest {
-  mode: TaskMode;
-  prompt: string;
-  style?: ArtStyle;
-  polycount?: number;
-  topology?: Topology;
-  seed?: number;
-  paletteOverride?: string[];
-  baseSpec?: ModelSpec;
-  texturePrompt?: string;
-}
+export type GenerateRequest = GenerationInput & { mode: TaskMode; prompt: string };
 
 export interface StartedJob {
   task: GenerationTask;
   spec: ModelSpec;
   duration: number;
-  stages: Array<{ until: number; label: string }>;
+  stages: JobStage[];
+  /** True when the queue ran in the browser because no API was reachable. */
+  local: boolean;
 }
 
 export interface JobProgress {
@@ -24,22 +26,69 @@ export interface JobProgress {
   stage: string;
 }
 
-export async function startJob(input: GenerateRequest): Promise<StartedJob> {
-  const response = await fetch("/api/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  const payload = (await response.json()) as Partial<StartedJob> & { error?: string };
-  if (!response.ok || !payload.task || !payload.spec) {
-    throw new Error(payload.error ?? "Generation failed. Please try again.");
-  }
-  return payload as StartedJob;
+/**
+ * Run the job in the browser. Generation is deterministic and dependency-free,
+ * so a static deployment (GitHub Pages) behaves exactly like the API-backed one.
+ */
+function runLocally(input: GenerateRequest): StartedJob {
+  const invalid = validateInput(input);
+  if (invalid) throw new Error(invalid);
+
+  const spec = resolveSpec(input);
+  return {
+    task: {
+      id: newTaskId(),
+      mode: input.mode,
+      prompt: input.prompt.trim() || spec.archetype,
+      style: input.style ?? "realistic",
+      status: "queued",
+      progress: 0,
+      stage: "Queued",
+      credits: CREDIT_COST[input.mode],
+      createdAt: Date.now(),
+    },
+    spec,
+    duration: DURATION[input.mode],
+    stages: STAGES[input.mode],
+    local: true,
+  };
 }
+
+/** Static deployments (GitHub Pages) ship without the queue endpoint. */
+const API_AVAILABLE = process.env.NEXT_PUBLIC_STATIC_EXPORT !== "true";
+
+export async function startJob(input: GenerateRequest): Promise<StartedJob> {
+  if (!API_AVAILABLE) return runLocally(input);
+
+  try {
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    const payload = (await response.json()) as Partial<StartedJob> & { error?: string };
+    if (response.status === 400 && payload.error) {
+      // A real validation failure — surface it rather than silently retrying.
+      throw new ValidationError(payload.error);
+    }
+    if (!response.ok || !payload.task || !payload.spec) {
+      return runLocally(input);
+    }
+    return { ...(payload as StartedJob), local: false };
+  } catch (cause) {
+    if (cause instanceof ValidationError) throw new Error(cause.message);
+    // No API on this host (static export) or the network failed — run in-browser.
+    return runLocally(input);
+  }
+}
+
+class ValidationError extends Error {}
 
 /**
  * Poll the queue until the job finishes. Falls back to the timeline returned by
- * the POST when the polling instance no longer holds the task (cold start).
+ * the POST when the polling instance no longer holds the task (cold start), and
+ * skips polling entirely for jobs that already ran locally.
  */
 export function trackJob(
   job: StartedJob,
@@ -64,21 +113,25 @@ export function trackJob(
     const tick = async () => {
       if (cancelled) return;
       let progress = localProgress();
-      try {
-        const response = await fetch(`/api/generate?id=${encodeURIComponent(job.task.id)}`, {
-          cache: "no-store",
-        });
-        if (response.ok) {
-          const { task } = (await response.json()) as { task: GenerationTask };
-          progress = { progress: task.progress, stage: task.stage };
-          if (task.status === "failed") {
-            reject(new Error(task.error ?? "Generation failed."));
-            return;
+
+      if (!job.local) {
+        try {
+          const response = await fetch(`/api/generate?id=${encodeURIComponent(job.task.id)}`, {
+            cache: "no-store",
+          });
+          if (response.ok) {
+            const { task } = (await response.json()) as { task: GenerationTask };
+            progress = { progress: task.progress, stage: task.stage };
+            if (task.status === "failed") {
+              reject(new Error(task.error ?? "Generation failed."));
+              return;
+            }
           }
+        } catch {
+          // Network hiccup — keep driving from the local timeline.
         }
-      } catch {
-        // Network hiccup — keep driving from the local timeline.
       }
+
       if (cancelled) return;
       onProgress(progress);
       if (progress.progress >= 100) {

@@ -1,14 +1,22 @@
 import { NextResponse } from "next/server";
-import { generateModelSpec, remeshSpec, retextureSpec } from "@/lib/model-spec";
+import {
+  DURATION,
+  newTaskId,
+  resolveSpec,
+  STAGES,
+  validateInput,
+  type GenerationInput,
+  type JobStage,
+} from "@/lib/generation";
 import { CREDIT_COST } from "@/lib/pricing";
-import type { ArtStyle, GenerationTask, ModelSpec, TaskMode, Topology } from "@/types";
+import type { GenerationTask, TaskMode } from "@/types";
 
 export const dynamic = "force-dynamic";
 
 interface StoredTask extends GenerationTask {
   /** Milliseconds the job takes end to end. */
   duration: number;
-  stages: Array<{ until: number; label: string }>;
+  stages: JobStage[];
 }
 
 /**
@@ -25,43 +33,6 @@ function sweep() {
     if (now - task.createdAt > TTL) tasks.delete(id);
   }
 }
-
-const STAGES: Record<TaskMode, Array<{ ratio: number; label: string }>> = {
-  "text-to-3d": [
-    { ratio: 0.18, label: "Understanding the prompt" },
-    { ratio: 0.55, label: "Generating base geometry" },
-    { ratio: 0.85, label: "Baking PBR textures" },
-    { ratio: 1, label: "Optimizing mesh" },
-  ],
-  "image-to-3d": [
-    { ratio: 0.2, label: "Analyzing the reference image" },
-    { ratio: 0.55, label: "Reconstructing volume" },
-    { ratio: 0.86, label: "Projecting textures" },
-    { ratio: 1, label: "Optimizing mesh" },
-  ],
-  texture: [
-    { ratio: 0.4, label: "Reading surface topology" },
-    { ratio: 0.8, label: "Painting PBR maps" },
-    { ratio: 1, label: "Packing 4K textures" },
-  ],
-  remesh: [
-    { ratio: 0.5, label: "Analyzing topology" },
-    { ratio: 1, label: "Rebuilding polygons" },
-  ],
-  animate: [
-    { ratio: 0.45, label: "Auto-rigging skeleton" },
-    { ratio: 0.8, label: "Binding skin weights" },
-    { ratio: 1, label: "Retargeting motion" },
-  ],
-};
-
-const DURATION: Record<TaskMode, number> = {
-  "text-to-3d": 7_000,
-  "image-to-3d": 7_500,
-  texture: 5_000,
-  remesh: 3_000,
-  animate: 4_500,
-};
 
 function project(task: StoredTask): GenerationTask {
   const elapsed = Date.now() - task.createdAt;
@@ -93,84 +64,28 @@ function strip(task: StoredTask): GenerationTask {
   };
 }
 
-interface GenerateBody {
-  mode?: TaskMode;
-  prompt?: string;
-  style?: ArtStyle;
-  polycount?: number;
-  topology?: Topology;
-  seed?: number;
-  paletteOverride?: string[];
-  baseSpec?: ModelSpec;
-  texturePrompt?: string;
-}
-
 export async function POST(request: Request) {
   sweep();
 
-  let body: GenerateBody;
+  let body: GenerationInput;
   try {
-    body = (await request.json()) as GenerateBody;
+    body = (await request.json()) as GenerationInput;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
+  const invalid = validateInput(body);
+  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
+
   const mode: TaskMode = body.mode ?? "text-to-3d";
-  if (!(mode in CREDIT_COST)) {
-    return NextResponse.json({ error: `Unknown mode: ${mode}` }, { status: 400 });
-  }
-
-  const prompt = (body.prompt ?? "").trim();
-  if ((mode === "text-to-3d" || mode === "texture") && prompt.length < 2) {
-    return NextResponse.json(
-      { error: "Describe what you want to generate — at least 2 characters." },
-      { status: 400 },
-    );
-  }
-  if (prompt.length > 600) {
-    return NextResponse.json({ error: "Prompt is limited to 600 characters." }, { status: 400 });
-  }
-  if ((mode === "texture" || mode === "remesh" || mode === "animate") && !body.baseSpec) {
-    return NextResponse.json(
-      { error: `The ${mode} step needs an existing model to work on.` },
-      { status: 400 },
-    );
-  }
-
-  const style: ArtStyle = body.style ?? "realistic";
-  let spec: ModelSpec;
-  switch (mode) {
-    case "texture":
-      spec = retextureSpec(body.baseSpec as ModelSpec, body.texturePrompt || prompt);
-      break;
-    case "remesh":
-      spec = remeshSpec(
-        body.baseSpec as ModelSpec,
-        body.polycount ?? 30_000,
-        body.topology ?? "triangle",
-      );
-      break;
-    case "animate":
-      spec = body.baseSpec as ModelSpec;
-      break;
-    default:
-      spec = generateModelSpec({
-        prompt: prompt || "abstract sculpture",
-        style,
-        polycount: body.polycount,
-        topology: body.topology,
-        seed: body.seed,
-        paletteOverride: body.paletteOverride,
-      });
-  }
-
+  const spec = resolveSpec(body);
   const duration = DURATION[mode];
-  const id = `task_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
   const task: StoredTask = {
-    id,
+    id: newTaskId(),
     mode,
-    prompt: prompt || spec.archetype,
-    style,
+    prompt: (body.prompt ?? "").trim() || spec.archetype,
+    style: body.style ?? "realistic",
     status: "queued",
     progress: 0,
     stage: "Queued",
@@ -178,19 +93,14 @@ export async function POST(request: Request) {
     createdAt: Date.now(),
     spec,
     duration,
-    stages: STAGES[mode].map((stage) => ({ until: stage.ratio, label: stage.label })),
+    stages: STAGES[mode],
   };
-  tasks.set(id, task);
+  tasks.set(task.id, task);
 
   // The spec is returned up front so the client can keep driving the job if the
   // polling instance is cold (serverless) — the UI still gates it behind progress.
   return NextResponse.json(
-    {
-      task: strip(task),
-      spec,
-      duration,
-      stages: task.stages,
-    },
+    { task: strip(task), spec, duration, stages: task.stages },
     { status: 201 },
   );
 }

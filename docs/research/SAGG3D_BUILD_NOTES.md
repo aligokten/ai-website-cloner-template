@@ -93,3 +93,22 @@ between polls.
 against the production server covered: landing generation, all five export
 formats, the discover gallery and detail dialog, and a workspace run of text to
 3D → remesh → texture → animate → export, with zero console or page errors.
+
+## Deployment (GitHub Pages)
+
+`.github/workflows/deploy-pages.yml` builds and publishes the site on every push
+to `master` or the feature branch, and on manual dispatch.
+
+Pages serves static files only, so the workflow removes `src/app/api` before
+building and sets `GITHUB_PAGES=true`, which switches `next.config.ts` to
+`output: "export"` with the repository sub-path as `basePath`. Nothing is lost:
+generation is deterministic and dependency-free, so `src/lib/generation.ts` is
+shared between the route handler and the browser, and `startJob()` runs the
+queue locally when `NEXT_PUBLIC_STATIC_EXPORT` is set. Text to 3D, Image to 3D,
+texturing, remesh, animation, the WebGL viewport, the credit ledger, the asset
+library and every export format all work on the static build — verified with a
+Playwright pass against `out/` served under the sub-path, with zero console
+errors.
+
+A server deployment (Vercel, a container, `next start`) needs no flags: the
+default config keeps `output: "standalone"` and the live `/api/generate` queue.
