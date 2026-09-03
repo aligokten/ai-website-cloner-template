@@ -11,6 +11,10 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default: "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
+        brand:
+          "bg-gradient-to-r from-brand to-brand-2 text-white shadow-[0_10px_30px_-12px_color-mix(in_oklab,var(--brand)_75%,transparent)] hover:brightness-110",
+        soft:
+          "border-border bg-surface-2 text-foreground hover:bg-accent",
         outline:
           "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:
@@ -33,6 +37,8 @@ const buttonVariants = cva(
         "icon-sm":
           "size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg",
         "icon-lg": "size-9",
+        xl: "h-11 gap-2 rounded-xl px-5 text-[0.95rem]",
+        "2xl": "h-12 gap-2 rounded-xl px-6 text-base",
       },
     },
     defaultVariants: {
