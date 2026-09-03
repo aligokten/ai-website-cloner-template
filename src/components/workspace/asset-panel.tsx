@@ -137,7 +137,8 @@ function LibraryCard({
   active: boolean;
   onSelect: () => void;
 }) {
-  const { ref, src } = useThumbnail(asset.spec, 200);
+  const { ref, src } = useThumbnail(asset.spec ?? null, 200);
+  const preview = src ?? asset.thumbnailUrl ?? null;
 
   return (
     <button
@@ -149,10 +150,10 @@ function LibraryCard({
       )}
     >
       <div ref={ref} className="relative aspect-square bg-background">
-        {src ? (
-          // Generated in-browser, so it is a data URL rather than a static asset.
+        {preview ? (
+          // Generated in-browser or hosted by the provider — not a static asset.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={src} alt={asset.name} className="size-full object-contain" />
+          <img src={preview} alt={asset.name} className="size-full object-contain" />
         ) : (
           <div className="size-full animate-pulse bg-surface-2/40" />
         )}

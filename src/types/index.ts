@@ -40,8 +40,19 @@ export interface ModelPart {
   roughness?: number;
 }
 
+export interface ReliefSpec {
+  size: number;
+  /** Base64, one depth byte per cell. */
+  depth: string;
+  /** Base64, three color bytes per cell. */
+  colors: string;
+  aspect: number;
+}
+
 export interface ModelSpec {
   archetype: string;
+  /** Set when the model was reconstructed from an image rather than assembled. */
+  relief?: ReliefSpec;
   seed: number;
   parts: ModelPart[];
   palette: string[];
@@ -75,7 +86,14 @@ export interface Asset {
   name: string;
   prompt: string;
   mode: TaskMode;
-  spec: ModelSpec;
+  /** Procedural description — absent for models returned by a provider. */
+  spec?: ModelSpec;
+  /** Provider-generated .glb, when a real 3D model produced this asset. */
+  modelUrl?: string;
+  modelUrls?: Record<string, string>;
+  providerTaskId?: string;
+  provider?: string;
+  thumbnailUrl?: string;
   animation: AnimationPreset;
   createdAt: number;
   updatedAt: number;

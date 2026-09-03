@@ -1,7 +1,8 @@
 import { matchArchetype } from "@/lib/archetypes";
 import { buildPalette } from "@/lib/palette";
+import { applyModifiers, readModifiers } from "@/lib/modifiers";
 import { hashString, mulberry32, range } from "@/lib/rng";
-import type { ArtStyle, ModelPart, ModelSpec, Topology } from "@/types";
+import type { ArtStyle, ModelPart, ModelSpec, ReliefSpec, Topology } from "@/types";
 
 export interface GenerateSpecOptions {
   prompt: string;
@@ -13,6 +14,8 @@ export interface GenerateSpecOptions {
   textured?: boolean;
   /** Colors sampled from a source image (image-to-3D). */
   paletteOverride?: string[];
+  /** Geometry reconstructed from the uploaded image; replaces the archetype. */
+  relief?: ReliefSpec;
 }
 
 const STYLE_SCALE: Record<ArtStyle, number> = {
@@ -68,6 +71,11 @@ export function generateModelSpec(options: GenerateSpecOptions): ModelSpec {
   const archetype = matchArchetype(prompt);
 
   let parts = archetype.build(rng);
+
+  // Attachments, proportions and materials named in the prompt, before the
+  // style pass so voxel/cartoon treatments cover them too.
+  parts = applyModifiers(parts, readModifiers(prompt), rng);
+
   if (style === "voxel") parts = voxelize(parts);
   if (style === "cartoon") parts = cartoonize(parts);
   if (style === "sculpture") {
@@ -95,7 +103,8 @@ export function generateModelSpec(options: GenerateSpecOptions): ModelSpec {
       : buildPalette(prompt, seed);
 
   return {
-    archetype: archetype.id,
+    archetype: options.relief ? "photo" : archetype.id,
+    relief: options.relief,
     seed,
     parts,
     palette,

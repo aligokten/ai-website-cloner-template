@@ -78,9 +78,26 @@ export function buildPalette(prompt: string, seed: number): string[] {
       index === 4 ? 0.24 + rng() * 0.1 : 0.42 + rng() * 0.28,
     ),
   );
+  // One named colour means the prompt is describing the whole object, so let it
+  // carry most of the model instead of a single slot.
+  if (named.length === 1) {
+    const base = named[0];
+    const palette = [base, shade(base, 0.18), generated[2], shade(base, -0.22), generated[4]];
+    return palette;
+  }
+
   const palette = [...named, ...generated].slice(0, 5);
   while (palette.length < 5) palette.push(generated[palette.length % 5]);
   return palette;
+}
+
+function shade(hex: string, amount: number): string {
+  const value = parseInt(hex.slice(1), 16);
+  const clamp = (channel: number) => Math.max(0, Math.min(255, Math.round(channel * (1 + amount))));
+  const r = clamp((value >> 16) & 255);
+  const g = clamp((value >> 8) & 255);
+  const b = clamp(value & 255);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
 }
 
 export function hueOf(hex: string): number {

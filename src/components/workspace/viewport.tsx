@@ -25,6 +25,8 @@ const ANIMATIONS: Array<{ id: AnimationPreset; label: string }> = [
 
 interface ViewportProps {
   spec: ModelSpec | null;
+  modelUrl?: string | null;
+  onLoadError?: (message: string) => void;
   stats: ModelStats | null;
   onStats: (stats: ModelStats) => void;
   wireframe: boolean;
@@ -42,6 +44,8 @@ interface ViewportProps {
 
 export function Viewport({
   spec,
+  modelUrl = null,
+  onLoadError,
   stats,
   onStats,
   wireframe,
@@ -106,9 +110,11 @@ export function Viewport({
         </div>
       </div>
 
-      {spec ? (
+      {spec || modelUrl ? (
         <ModelViewer
           spec={spec}
+          modelUrl={modelUrl}
+          onLoadError={onLoadError}
           animation={animation}
           wireframe={wireframe}
           autoRotate={autoRotate}

@@ -9,6 +9,7 @@ import {
   type JobStage,
 } from "@/lib/generation";
 import { CREDIT_COST } from "@/lib/pricing";
+import { ProviderError, serverProvider } from "@/lib/providers";
 import type { GenerationTask, TaskMode } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -78,6 +79,50 @@ export async function POST(request: Request) {
   if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
 
   const mode: TaskMode = body.mode ?? "text-to-3d";
+
+  // A configured provider runs the real thing; the procedural engine is the fallback.
+  const configured = serverProvider();
+  if (configured && configured.provider.modes.includes(mode)) {
+    try {
+      const remote = await configured.provider.create(
+        {
+          mode,
+          prompt: (body.prompt ?? "").trim(),
+          style: body.style ?? "realistic",
+          polycount: body.polycount,
+          topology: body.topology,
+          seed: body.seed,
+          image: body.image,
+          baseTaskId: body.baseTaskId,
+          texturePrompt: body.texturePrompt,
+        },
+        configured.key,
+      );
+      return NextResponse.json(
+        {
+          task: {
+            id: remote.id,
+            mode,
+            prompt: (body.prompt ?? "").trim(),
+            style: body.style ?? "realistic",
+            status: "queued",
+            progress: 0,
+            stage: `Queued on ${configured.provider.label}`,
+            credits: CREDIT_COST[mode],
+            createdAt: Date.now(),
+          },
+          duration: DURATION[mode],
+          stages: STAGES[mode],
+          remote: { providerId: configured.provider.id, taskId: remote.id },
+        },
+        { status: 201 },
+      );
+    } catch (cause) {
+      const message =
+        cause instanceof ProviderError ? cause.message : `${configured.provider.label} rejected the job.`;
+      return NextResponse.json({ error: message }, { status: 502 });
+    }
+  }
   const spec = resolveSpec(body);
   const duration = DURATION[mode];
 
@@ -106,13 +151,43 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
-  const id = new URL(request.url).searchParams.get("id");
+  const url = new URL(request.url);
+  const id = url.searchParams.get("id");
   if (!id) {
     return NextResponse.json({ error: "Missing task id." }, { status: 400 });
   }
+
   const task = tasks.get(id);
-  if (!task) {
-    return NextResponse.json({ error: "Task not found or expired." }, { status: 404 });
+  if (task) return NextResponse.json({ task: project(task) });
+
+  // Not one of ours — it may belong to the configured provider.
+  const configured = serverProvider();
+  if (configured) {
+    const mode = (url.searchParams.get("mode") as TaskMode | null) ?? "text-to-3d";
+    try {
+      const remote = await configured.provider.poll(id, mode, configured.key);
+      return NextResponse.json({
+        task: {
+          id: remote.id,
+          mode,
+          prompt: "",
+          style: "realistic",
+          status: remote.status,
+          progress: remote.progress,
+          stage: remote.stage ?? remote.status,
+          credits: CREDIT_COST[mode],
+          createdAt: Date.now(),
+          error: remote.error,
+        },
+        modelUrls: remote.modelUrls,
+        thumbnailUrl: remote.thumbnailUrl,
+      });
+    } catch (cause) {
+      const message =
+        cause instanceof ProviderError ? cause.message : "Provider polling failed.";
+      return NextResponse.json({ error: message }, { status: 502 });
+    }
   }
-  return NextResponse.json({ task: project(task) });
+
+  return NextResponse.json({ error: "Task not found or expired." }, { status: 404 });
 }

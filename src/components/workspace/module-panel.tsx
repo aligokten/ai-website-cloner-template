@@ -14,9 +14,10 @@ import {
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CREDIT_COST } from "@/lib/pricing";
+import { reconstructFromImage } from "@/lib/image-reconstruct";
 import { samplePaletteFromImage } from "@/lib/three/texture";
 import { cn } from "@/lib/utils";
-import type { AnimationPreset, ArtStyle, TaskMode, Topology } from "@/types";
+import type { AnimationPreset, ArtStyle, ReliefSpec, TaskMode, Topology } from "@/types";
 
 export interface SubmitPayload {
   mode: TaskMode;
@@ -28,6 +29,8 @@ export interface SubmitPayload {
   paletteOverride?: string[];
   sourceImage?: string;
   animation?: AnimationPreset;
+  /** Geometry reconstructed from the reference image. */
+  relief?: ReliefSpec;
 }
 
 const MODULES: Array<{ id: TaskMode; label: string; icon: typeof Boxes }> = [
@@ -84,6 +87,8 @@ export function ModulePanel({
   const [animation, setAnimation] = useState<AnimationPreset>("idle");
   const [image, setImage] = useState<string | null>(null);
   const [palette, setPalette] = useState<string[]>([]);
+  const [relief, setRelief] = useState<ReliefSpec | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -94,7 +99,7 @@ export function ModulePanel({
     balance < cost ||
     (needsModel && !hasModel) ||
     (mode === "text-to-3d" && prompt.trim().length < 2) ||
-    (mode === "image-to-3d" && !image) ||
+    (mode === "image-to-3d" && (!image || analyzing)) ||
     (mode === "texture" && texturePrompt.trim().length < 2);
 
   const readImage = async (file: File) => {
@@ -119,13 +124,33 @@ export function ModulePanel({
       return;
     }
     setImage(dataUrl);
-    setPalette(await samplePaletteFromImage(dataUrl, 4));
+    setAnalyzing(true);
+    try {
+      const [sampled, reconstructed] = await Promise.all([
+        samplePaletteFromImage(dataUrl, 4),
+        reconstructFromImage(dataUrl, { size: 56 }),
+      ]);
+      setPalette(sampled);
+      setRelief(reconstructed);
+      if (!reconstructed) {
+        setImageError(
+          "The subject could not be separated from the background — the model will follow the prompt and colors instead. A photo with a plain backdrop or a transparent PNG works best.",
+        );
+      }
+    } catch {
+      setImageError("That image could not be analyzed.");
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const submit = () => {
     onSubmit({
       mode,
-      prompt: mode === "texture" ? texturePrompt : prompt || "abstract sculpture",
+      prompt:
+        mode === "texture"
+          ? texturePrompt
+          : prompt || (mode === "image-to-3d" ? "reference image" : "abstract sculpture"),
       style,
       polycount,
       topology,
@@ -133,6 +158,7 @@ export function ModulePanel({
       paletteOverride: mode === "image-to-3d" ? palette : undefined,
       sourceImage: mode === "image-to-3d" ? image ?? undefined : undefined,
       animation: mode === "animate" ? animation : undefined,
+      relief: mode === "image-to-3d" ? relief ?? undefined : undefined,
     });
   };
 
@@ -212,6 +238,8 @@ export function ModulePanel({
                     onClick={() => {
                       setImage(null);
                       setPalette([]);
+                      setRelief(null);
+                      setImageError(null);
                     }}
                     className="absolute right-2 top-2 rounded-md border border-border bg-background/80 p-1"
                   >
@@ -256,6 +284,15 @@ export function ModulePanel({
                 ))}
               </div>
             </div>
+          ) : null}
+          {image ? (
+            <p className="text-xs text-muted-foreground">
+              {analyzing
+                ? "Analyzing the silhouette…"
+                : relief
+                  ? `Silhouette captured at ${relief.size}×${relief.size} — the mesh will follow the photo.`
+                  : "Using the prompt and sampled colors."}
+            </p>
           ) : null}
           <Field label="Subject hint (optional)">
             <input

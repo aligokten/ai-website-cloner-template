@@ -1,6 +1,6 @@
 import { generateModelSpec, remeshSpec, retextureSpec } from "@/lib/model-spec";
 import { CREDIT_COST } from "@/lib/pricing";
-import type { ArtStyle, ModelSpec, TaskMode, Topology } from "@/types";
+import type { ArtStyle, ModelSpec, ReliefSpec, TaskMode, Topology } from "@/types";
 
 export interface GenerationInput {
   mode?: TaskMode;
@@ -12,6 +12,12 @@ export interface GenerationInput {
   paletteOverride?: string[];
   baseSpec?: ModelSpec;
   texturePrompt?: string;
+  /** Data URL of the reference image, forwarded to a provider. */
+  image?: string;
+  /** Provider task id of the model being refined. */
+  baseTaskId?: string;
+  /** Geometry reconstructed from the uploaded image. */
+  relief?: ReliefSpec;
 }
 
 export interface JobStage {
@@ -100,6 +106,7 @@ export function resolveSpec(input: GenerationInput): ModelSpec {
         topology: input.topology,
         seed: input.seed,
         paletteOverride: input.paletteOverride,
+        relief: input.relief,
       });
   }
 }

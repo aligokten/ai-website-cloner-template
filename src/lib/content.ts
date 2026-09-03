@@ -37,8 +37,8 @@ export const FEATURES = [
     id: "image-to-3d",
     title: "Image to 3D",
     description:
-      "Upload a photo or a concept sketch. SAGG3D reads the silhouette and the dominant colors, rebuilds volume and projects the texture back onto the mesh.",
-    bullets: ["Single image input", "Palette extraction", "Free retries", "No install required"],
+      "Upload a photo or a concept sketch. SAGG3D separates the subject from the backdrop, inflates the silhouette into a volume with a distance transform, and paints every cell with the colors from your image.",
+    bullets: ["Silhouette segmentation", "Inflated volume", "Per-cell color", "Holes preserved"],
   },
   {
     id: "texturing",
@@ -123,7 +123,7 @@ export const TESTIMONIALS = [
 export const FAQ = [
   {
     q: "How does SAGG3D generate a model?",
-    a: "Your prompt is parsed for subject, style and color, then matched to a structural archetype. The generator assembles the mesh part by part, resolves proportions for the chosen art style, and bakes procedural PBR materials from the palette. Every prompt is deterministic — the same words always return the same model.",
+    a: "Two ways. The built-in engine parses your prompt for subject, attachments, proportions, materials and color, matches it to a structural archetype and assembles the mesh part by part — deterministic, instant and free. Connect a generation provider (Meshy or Tripo) with your own API key and the same workspace sends the job to a real 3D model instead, returning a textured mesh built from your exact prompt.",
   },
   {
     q: "What do credits cost?",
@@ -139,7 +139,7 @@ export const FAQ = [
   },
   {
     q: "Do I need a GPU?",
-    a: "No. Generation runs on our side and the viewport renders with WebGL, so a laptop browser is enough. Nothing to install.",
+    a: "No. The built-in engine runs in your browser and the viewport renders with WebGL, so a laptop is enough. When a provider is connected, the heavy work happens on their side and only the finished model comes back.",
   },
   {
     q: "Can I use the API?",

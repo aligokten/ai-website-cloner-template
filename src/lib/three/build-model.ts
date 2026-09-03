@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { buildReliefGeometry } from "@/lib/three/build-relief";
 import { createProceduralTexture, patternFor } from "@/lib/three/texture";
 import type { AnimationPreset, ModelPart, ModelSpec } from "@/types";
 
@@ -55,6 +56,8 @@ export interface BuildOptions {
 }
 
 export function buildModel(spec: ModelSpec, options: BuildOptions = {}): BuiltModel {
+  if (spec.relief) return buildReliefModel(spec, options);
+
   const group = new THREE.Group();
   const detail = detailFor(spec.polycount, spec.parts.length);
   const flat = spec.style === "low-poly" || spec.style === "voxel";
@@ -130,6 +133,52 @@ export function buildModel(spec: ModelSpec, options: BuildOptions = {}): BuiltMo
     materials,
     geometries,
     textures,
+  };
+}
+
+/** A model reconstructed from an image: one inflated, vertex-colored mesh. */
+function buildReliefModel(spec: ModelSpec, options: BuildOptions): BuiltModel {
+  const relief = spec.relief as NonNullable<ModelSpec["relief"]>;
+  const group = new THREE.Group();
+  const geometry = buildReliefGeometry(relief, spec.style === "low-poly" ? 0.34 : 0.46);
+
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: !options.untextured,
+    color: options.untextured ? new THREE.Color("#b9b6c6") : 0xffffff,
+    flatShading: spec.style === "low-poly" || spec.style === "voxel",
+    roughness: 0.88,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.tag = "body";
+  mesh.userData.basePosition = [0, 0, 0];
+  mesh.userData.baseRotation = [0, 0, 0];
+  group.add(mesh);
+
+  const bounds = new THREE.Box3().setFromObject(group);
+  const center = bounds.getCenter(new THREE.Vector3());
+  group.position.x -= center.x;
+  group.position.z -= center.z;
+  group.position.y -= bounds.min.y;
+
+  const size = bounds.getSize(new THREE.Vector3());
+  const maxAxis = Math.max(size.x, size.y, size.z) || 1;
+  const normalized = 2.4 / maxAxis;
+  group.scale.setScalar(normalized);
+  group.position.multiplyScalar(normalized);
+
+  const count = geometry.attributes.position.count;
+  return {
+    group,
+    triangles: Math.round(spec.topology === "quad" ? count / 6 : count / 3),
+    vertices: count,
+    materials: [material],
+    geometries: [geometry],
+    textures: [],
   };
 }
 

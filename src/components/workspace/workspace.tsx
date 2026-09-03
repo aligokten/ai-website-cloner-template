@@ -1,17 +1,20 @@
 "use client";
 
-import { AlertCircle, Coins, History, X } from "lucide-react";
+import { AlertCircle, Coins, Cpu, History, X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AssetPanel } from "@/components/workspace/asset-panel";
 import { ModulePanel, type SubmitPayload } from "@/components/workspace/module-panel";
+import { ProviderPanel } from "@/components/workspace/provider-panel";
 import { Viewport, type Environment } from "@/components/workspace/viewport";
 import type { ModelStats } from "@/components/three/model-viewer";
+import { Button } from "@/components/ui/button";
 import { useCredits } from "@/hooks/use-credits";
 import { useLibrary } from "@/hooks/use-library";
+import { useProviderSettings } from "@/hooks/use-provider-settings";
 import { startJob, trackJob } from "@/lib/generate-client";
 import { PLANS, type PlanId } from "@/lib/pricing";
-import { exportSpec, type ExportFormat } from "@/lib/three/export";
+import { exportModelUrl, exportSpec, type ExportFormat } from "@/lib/three/export";
 import { cn } from "@/lib/utils";
 import type { AnimationPreset, ArtStyle, Asset, ModelSpec, TaskMode } from "@/types";
 
@@ -36,18 +39,21 @@ function newId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function nameFor(prompt: string) {
+function nameFor(prompt: string, mode: TaskMode) {
   const words = prompt.trim().split(/\s+/).slice(0, 4).join(" ");
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Untitled model";
+  if (words) return words.charAt(0).toUpperCase() + words.slice(1);
+  return mode === "image-to-3d" ? "Image model" : "Untitled model";
 }
 
 export function Workspace() {
   const params = useSearchParams();
   const { credits, hydrated: creditsReady, spend, refund, setPlan } = useCredits();
   const library = useLibrary();
+  const providerSettings = useProviderSettings();
 
   const [mode, setMode] = useState<TaskMode>("text-to-3d");
   const [spec, setSpec] = useState<ModelSpec | null>(null);
+  const [modelUrl, setModelUrl] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [stats, setStats] = useState<ModelStats | null>(null);
   const [animation, setAnimation] = useState<AnimationPreset>("none");
@@ -62,6 +68,7 @@ export function Workspace() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [exporting, setExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [showProvider, setShowProvider] = useState(false);
   const cancelRef = useRef<(() => void) | null>(null);
 
   const initialPrompt = params.get("prompt") ?? undefined;
@@ -71,12 +78,13 @@ export function Workspace() {
 
   // Restore the most recent asset once the library rehydrates.
   useEffect(() => {
-    if (!library.hydrated || spec || !library.assets.length) return;
+    if (!library.hydrated || spec || modelUrl || !library.assets.length) return;
     const latest = library.assets[0];
-    setSpec(latest.spec);
+    setSpec(latest.spec ?? null);
+    setModelUrl(latest.modelUrl ?? null);
     setActiveId(latest.id);
     setAnimation(latest.animation);
-  }, [library.hydrated, library.assets, spec]);
+  }, [library.hydrated, library.assets, spec, modelUrl]);
 
   const run = useCallback(
     async (payload: SubmitPayload) => {
@@ -96,16 +104,23 @@ export function Workspace() {
       setStage("Queued");
 
       try {
-        const job = await startJob({
-          mode: payload.mode,
-          prompt: payload.prompt,
-          style: payload.style,
-          polycount: payload.polycount,
-          topology: payload.topology,
-          paletteOverride: payload.paletteOverride,
-          texturePrompt: payload.texturePrompt,
-          baseSpec: spec ?? undefined,
-        });
+        const active = library.assets.find((asset) => asset.id === activeId);
+        const job = await startJob(
+          {
+            mode: payload.mode,
+            prompt: payload.prompt,
+            style: payload.style,
+            polycount: payload.polycount,
+            topology: payload.topology,
+            paletteOverride: payload.paletteOverride,
+            texturePrompt: payload.texturePrompt,
+            baseSpec: spec ?? undefined,
+            image: payload.sourceImage,
+            baseTaskId: active?.providerTaskId,
+            relief: payload.relief,
+          },
+          providerSettings.settings,
+        );
 
         const tracker = trackJob(job, ({ progress: value, stage: label }) => {
           setProgress(value);
@@ -114,16 +129,21 @@ export function Workspace() {
         cancelRef.current = tracker.cancel;
         const result = await tracker.promise;
 
-        setSpec(result);
+        setSpec(result.spec ?? null);
+        setModelUrl(result.modelUrl ?? null);
         setStats(null);
 
         if (payload.mode === "text-to-3d" || payload.mode === "image-to-3d") {
           const asset: Asset = {
             id: newId("asset"),
-            name: nameFor(payload.prompt),
+            name: nameFor(payload.prompt, payload.mode),
             prompt: payload.prompt,
             mode: payload.mode,
-            spec: result,
+            spec: result.spec,
+            modelUrl: result.modelUrl,
+            modelUrls: result.modelUrls,
+            providerTaskId: result.providerTaskId,
+            provider: job.remote?.providerId,
             animation: "none",
             createdAt: Date.now(),
             updatedAt: Date.now(),
@@ -138,7 +158,10 @@ export function Workspace() {
           const nextAnimation =
             payload.mode === "animate" ? payload.animation ?? "idle" : undefined;
           library.update(activeId, {
-            spec: result,
+            spec: result.spec,
+            modelUrl: result.modelUrl,
+            modelUrls: result.modelUrls,
+            providerTaskId: result.providerTaskId ?? active?.providerTaskId,
             credits: (library.assets.find((a) => a.id === activeId)?.credits ?? 0) + cost,
             ...(nextAnimation ? { animation: nextAnimation } : {}),
           });
@@ -179,17 +202,20 @@ export function Workspace() {
         setBusy(false);
       }
     },
-    [activeId, library, refund, spend, spec],
+    [activeId, library, providerSettings.settings, refund, spend, spec],
   );
 
   const handleExport = useCallback(
     async (format: ExportFormat) => {
-      if (!spec) return;
+      if (!spec && !modelUrl) return;
       setExporting(true);
       setExportMessage(null);
       try {
         const active = library.assets.find((asset) => asset.id === activeId);
-        const filename = await exportSpec(spec, format, active?.name ?? "sagg3d-model");
+        const name = active?.name ?? "sagg3d-model";
+        const filename = modelUrl
+          ? await exportModelUrl(modelUrl, format, name)
+          : await exportSpec(spec as ModelSpec, format, name);
         setExportMessage(`Downloaded ${filename}`);
       } catch (cause) {
         setExportMessage(cause instanceof Error ? cause.message : "Export failed.");
@@ -197,11 +223,12 @@ export function Workspace() {
         setExporting(false);
       }
     },
-    [activeId, library.assets, spec],
+    [activeId, library.assets, modelUrl, spec],
   );
 
   const selectAsset = useCallback((asset: Asset) => {
-    setSpec(asset.spec);
+    setSpec(asset.spec ?? null);
+    setModelUrl(asset.modelUrl ?? null);
     setActiveId(asset.id);
     setAnimation(asset.animation);
     setStats(null);
@@ -213,6 +240,7 @@ export function Workspace() {
       if (id === activeId) {
         setActiveId(null);
         setSpec(null);
+        setModelUrl(null);
       }
     },
     [activeId, library],
@@ -234,6 +262,16 @@ export function Workspace() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={providerSettings.active ? "brand" : "soft"}
+            size="lg"
+            onClick={() => setShowProvider((value) => !value)}
+          >
+            <Cpu />
+            {providerSettings.active
+              ? `Engine: ${providerSettings.settings.providerId}`
+              : "Engine: built-in"}
+          </Button>
           <div className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2">
             <Coins className="size-4 text-brand" />
             <span className="font-mono text-sm">
@@ -261,6 +299,14 @@ export function Workspace() {
         </div>
       </div>
 
+      {showProvider ? (
+        <ProviderPanel
+          settings={providerSettings.settings}
+          onChange={providerSettings.update}
+          onClose={() => setShowProvider(false)}
+        />
+      ) : null}
+
       {error ? (
         <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -286,6 +332,8 @@ export function Workspace() {
         <div className="flex min-h-[520px] flex-col gap-4">
           <Viewport
             spec={spec}
+            modelUrl={modelUrl}
+            onLoadError={setError}
             stats={stats}
             onStats={setStats}
             wireframe={wireframe}
@@ -359,7 +407,7 @@ export function Workspace() {
           onDelete={deleteAsset}
           onExport={(format) => void handleExport(format)}
           exporting={exporting}
-          canExport={Boolean(spec)}
+          canExport={Boolean(spec || modelUrl)}
           exportMessage={exportMessage}
         />
       </div>

@@ -112,3 +112,66 @@ errors.
 
 A server deployment (Vercel, a container, `next start`) needs no flags: the
 default config keeps `output: "standalone"` and the live `/api/generate` queue.
+
+## Running against a real 3D model
+
+The built-in engine is deterministic and free, but it assembles shapes rather
+than generating them — for arbitrary prompts it can only get so close. The
+workspace therefore has a provider layer (`src/lib/providers/`) that hands the
+job to an actual 3D generative model:
+
+| Provider | Modes | Configure |
+| --- | --- | --- |
+| Built-in | all five | nothing — the default |
+| Meshy | text, image, texture, remesh | `SAGG3D_PROVIDER=meshy` + `SAGG3D_API_KEY` |
+| Tripo | text, image | `SAGG3D_PROVIDER=tripo` + `SAGG3D_API_KEY` |
+
+Server deployments set those two variables and `/api/generate` creates and polls
+the provider task; the browser never sees the key. Where no server is available
+(the GitHub Pages build), the workspace's **Engine** panel accepts a key that
+stays in that browser's local storage and calls the provider directly — with the
+caveat that a provider may refuse cross-origin browser calls, in which case the
+server route is the answer. Either way the finished `.glb` is loaded into the
+same viewport (`src/lib/three/load-model.ts`) and can be re-exported to every
+supported format.
+
+**Not verified live.** This build environment blocks egress to every generation
+API (`api.meshy.ai`, `api.tripo3d.ai`, `fal.run`, `api.replicate.com` all fail to
+connect), so the adapters are written against each provider's documented REST
+shape and exercised only through types, the build, and the UI paths. The request
+and response mapping is isolated in one small file per provider so a field name
+that has since changed is a one-line correction.
+
+## Image to 3D, without a model
+
+`src/lib/image-reconstruct.ts` builds geometry from the picture itself:
+
+1. Draw the upload into a square grid (56×56 by default), letterboxed so the
+   subject keeps its proportions.
+2. Flood fill inwards from the border to remove the backdrop, using alpha when
+   the image has it and a border-averaged reference color otherwise. A second
+   pass removes enclosed regions that still match the backdrop, so a mug handle
+   keeps its hole.
+3. Run a two-pass chamfer distance transform over the mask and take its square
+   root as depth — the silhouette inflates into a rounded volume instead of a
+   flat slab.
+4. Store depth and RGB as base64 bytes on the spec, so an asset stays small
+   enough for local storage.
+
+`src/lib/three/build-relief.ts` turns that into a mesh: a front surface pushed
+out by the depth map, a mirrored back, and quads emitted wherever any corner is
+filled so the two sides meet along the outline and close the model with no rim
+seam. Colors are per-vertex, linearized from sRGB.
+
+## Prompt modifiers
+
+`src/lib/modifiers.ts` reads attachments (wings, horns, tail, hat, crown,
+shield, blade, wheels, glasses, backpack), proportion words (tall, squat,
+chunky, slender, giant, tiny) and materials (metal, gold, glass, stone, wood,
+rusty) out of the prompt and applies them to the archetype's parts before the
+art-style pass. A single named color now carries most of the palette rather than
+one slot, so "golden robot" reads as gold.
+
+The viewport also gained an image-based environment (`RoomEnvironment` through
+`PMREMGenerator`) and ACES tone mapping: metals need something to reflect or
+they render black, and the direct lights came down accordingly.

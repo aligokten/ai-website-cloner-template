@@ -73,7 +73,7 @@ export function HeroGenerator() {
         });
         cancelRef.current = tracker.cancel;
         const result = await tracker.promise;
-        setSpec(result);
+        if (result.spec) setSpec(result.spec);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Generation failed.");
       } finally {
