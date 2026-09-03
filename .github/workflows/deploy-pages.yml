@@ -31,6 +31,9 @@ jobs:
           node-version: 24
           cache: npm
 
+      # Requires Pages to be on: Settings -> Pages -> Build and deployment ->
+      # Source: "GitHub Actions". `enablement` turns it on automatically only
+      # when the workflow token is allowed to create the Pages site.
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v5
