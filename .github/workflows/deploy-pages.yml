@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - master
-      - claude/sagg3d-site-clone-pxkln7
   workflow_dispatch:
 
 permissions:
